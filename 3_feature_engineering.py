@@ -58,19 +58,19 @@ for col in x.columns:
     if col_hash in column_hashes:
         # Potential duplicate - verify with full column comparison
         original_col = column_hashes[col_hash]
-        if x[col].equals(x[original_col]):  # exact duplicate
-            duplicate_cols.append(col)  # mark for removal
+        if x[col].equals(x[original_col]):
+            duplicate_cols.append(col)
             print(f"  Found duplicate: '{col}' is identical to '{original_col}'")
         else:
-            column_hashes[col_hash] = col  # different content, keep it
-            cols_to_keep.append(col)  # keep it
+            column_hashes[col_hash] = col
+            cols_to_keep.append(col)
     else:
-        column_hashes[col_hash] = col  # new hash, keep it
-        cols_to_keep.append(col)  # keep it
+        column_hashes[col_hash] = col
+        cols_to_keep.append(col)
 
 # Keep only non-duplicate columns
 if duplicate_cols:
-    x = x[cols_to_keep]  # retain only unique columns
+    x = x[cols_to_keep]
     print(f"Removed {len(duplicate_cols)} duplicate columns: {duplicate_cols}")
 else:
     print("No duplicate columns found")
@@ -78,10 +78,8 @@ else:
 print(f"Duplicate removal completed in {time.time() - start_time:.1f} seconds")
 
 # Also manually remove known junk columns (all zeros or irrelevant)
-manual_drops = (
-    ["Fwd Header Length.1"] if "Fwd Header Length.1" in x.columns else []
-)  # known junk
-if manual_drops:  # drop if exists
+manual_drops = ["Fwd Header Length.1"] if "Fwd Header Length.1" in x.columns else []
+if manual_drops:
     x.drop(columns=manual_drops, inplace=True)
     print(f"Manually dropped: {manual_drops}")
 
@@ -99,14 +97,30 @@ x_scaled_df = pd.DataFrame(
 joblib.dump(scaler, "standard_scaler.pkl")
 print("Saved StandardScaler as 'standard_scaler.pkl'")
 
+""" STRATEGY: Use a stratified sample for feature selection (much faster!) """
+# Feature selection on full 2.8M rows takes forever. Use a representative sample instead.
+print("\nCreating stratified sample for feature selection (20k rows)...")
+from sklearn.model_selection import train_test_split
+
+# Use 2k samples (stratified by class) for feature selection - much faster!
+sample_size = 2000
+if len(x_scaled_df) > sample_size:
+    x_sample, _, y_sample, _ = train_test_split(
+        x_scaled_df, y, train_size=sample_size, stratify=y, random_state=42
+    )
+    print(f"Using {len(x_sample):,} samples for feature selection")
+else:
+    x_sample, y_sample = x_scaled_df, y
+
 """ Sequential Feature Selection (SFS, SBS, Bidirectional) """
 # Using Logistic Regression with 'saga' solver -> fast + supports multiclass natively
 base_model_for_selection = LogisticRegression(
-    multi_class="multinomial",  # Handles 8 classes directly
     solver="saga",  # fast for large datasets
-    max_iter=1000,  # enough for convergence in selection
+    max_iter=1000,  # increased to ensure convergence
+    tol=1e-3,  # tolerance for convergence
     n_jobs=-1,  # utilize all CPU cores
     random_state=42,  # for reproducibility
+    verbose=0,  # suppress warnings
 )
 
 """ Sequential Forward Selection (SFS) (start from 0 -> add best features one by one) """
@@ -122,7 +136,7 @@ sfs = SFS(
     cv=3,  # 3-fold cross-validation (faster than 5-fold)
     n_jobs=-1,  # utilize all CPU cores
 )
-sfs.fit(x_scaled_df, y)  # fit SFS on scaled data
+sfs.fit(x_sample, y_sample)  # fit SFS on SAMPLE data (much faster)
 sfs_features = x.columns[sfs.get_support()].tolist()  # get selected feature names
 print(f"SFS finished in {(time.time() - start)/60:.1f} minutes")
 print(f"Selected {len(sfs_features)} features by SFS: {sfs_features}")
@@ -138,7 +152,7 @@ sbs = SFS(
     cv=3,  # 3-fold cross-validation (faster than 5-fold)
     n_jobs=-1,  # utilize all CPU cores
 )
-sbs.fit(x_scaled_df, y)  # fit SBS on scaled data
+sbs.fit(x_sample, y_sample)  # fit SBS on SAMPLE data (much faster)
 sbs_features = x.columns[sbs.get_support()].tolist()  # get selected feature names
 print(f"SBS finished in {(time.time() - start)/60:.1f} minutes")
 print(f"Selected {len(sbs_features)} features by SBS: {sbs_features}")
@@ -154,8 +168,8 @@ bidir = SFS(
     cv=3,  # 3-fold cross-validation (faster than 5-fold)
     n_jobs=-1,  # utilize all CPU cores
 )
-bidir.fit(x_scaled_df, y)  # fit on scaled data
-bidir_features = x.columns[bidir.get_support()].tolist()  # get selected feature names
+bidir.fit(x_sample, y_sample)  # fit on SAMPLE data (much faster)
+bidir_features = x.columns[bidir.get_support()].tolist()
 print(f"Bidirectional finished in {(time.time() - start)/60:.1f} minutes")
 print(f"Selected {len(bidir_features)} features by Bidirectional: {bidir_features}")
 
